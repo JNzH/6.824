@@ -5,7 +5,6 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 
-
 //
 // Map functions return a slice of KeyValue.
 //
@@ -24,7 +23,6 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
@@ -34,8 +32,21 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the master.
-	// CallExample()
+	//CallExample()
+	Id := CallRegisterWorker()
+	CallRequestTask(Id)
+}
 
+func CallRegisterWorker() string {
+	reply := &WorkerInfo{}
+	call("Master.RegisterWorker", &WorkerInfo{}, reply)
+	return reply.WorkerId
+}
+
+func CallRequestTask(Id string) {
+	args := RequestTaskInfo{WorkerId: Id}
+	reply := ReplyTaskInfo{}
+	call("Master.RequestTask", &args, &reply)
 }
 
 //
@@ -58,6 +69,10 @@ func CallExample() {
 	call("Master.Example", &args, &reply)
 
 	// reply.Y should be 100.
+	fmt.Printf("reply.Y %v\n", reply.Y)
+
+	call("Master.Multiply", &args, &reply)
+
 	fmt.Printf("reply.Y %v\n", reply.Y)
 }
 

@@ -1,18 +1,59 @@
 package mr
 
-import "log"
+import (
+	"fmt"
+	"log"
+	"strconv"
+	"sync"
+)
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
+const (
+	IDLE        = "IDLE"
+	IN_PROGRESS = "IN_PROGRESS"
+	COMPLETED   = "COMPLETED"
+)
 
 type Master struct {
-	// Your definitions here.
-
+	mu           sync.Mutex
+	Status       map[string]int
+	WorkerStatus map[string]*WorkerInfo
 }
 
 // Your code here -- RPC handlers for the worker to call.
+
+func (m *Master) RequestTask(args *RequestTaskInfo, reply *ReplyTaskInfo) error {
+	fmt.Printf("Request task from %s\n", args.WorkerId)
+	reply = ChooseTask(args.WorkerId)
+	fmt.Printf("Assign task %s %d to %s\n", reply.FileName, reply.FileSlice, args.WorkerId)
+	return nil
+}
+
+func (m *Master) RegisterWorker(args *WorkerInfo, info *WorkerInfo) error {
+	Id := len(m.WorkerStatus) + 1
+	info.WorkerId = strconv.Itoa(Id)
+	m.WorkerStatus[info.WorkerId] = info
+	fmt.Printf("Register worker, assign ID with %s\n", info.WorkerId)
+	return nil
+}
+
+func ChooseTask(WorkerId string) *ReplyTaskInfo {
+	reply := &ReplyTaskInfo{}
+	Id, _ := strconv.Atoi(WorkerId)
+	if Id%2 == 0 {
+		reply.TaskInfo.WorkerId = WorkerId
+		reply.TaskInfo.FileName = "1"
+		reply.TaskInfo.FileSlice = 2
+	} else {
+		reply.TaskInfo.WorkerId = WorkerId
+		reply.TaskInfo.FileName = "2"
+		reply.TaskInfo.FileSlice = 1
+	}
+	return reply
+}
 
 //
 // an example RPC handler.
@@ -24,6 +65,10 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+func (m *Master) Multiply(args *ExampleArgs, reply *ExampleReply) error {
+	reply.Y = args.X * 2
+	return nil
+}
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -48,9 +93,6 @@ func (m *Master) server() {
 func (m *Master) Done() bool {
 	ret := false
 
-	// Your code here.
-
-
 	return ret
 }
 
@@ -64,7 +106,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	// Your code here.
 
-
 	m.server()
+	m.WorkerStatus = make(map[string]*WorkerInfo)
 	return &m
 }
