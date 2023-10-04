@@ -6,7 +6,11 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 import "strconv"
 
 //
@@ -22,18 +26,26 @@ type ExampleReply struct {
 	Y int
 }
 
-type TaskInfo struct {
-	WorkerId  string
-	FileName  string
-	FileSlice int
-}
+type TaskType int
 
-type MapTaskInfo struct {
-	TaskInfo
-}
+const (
+	TaskNull   TaskType = -1
+	TaskMap    TaskType = 0
+	TaskReduce TaskType = 1
+	TaskQuit   TaskType = 3
+)
 
-type ReduceTaskInfo struct {
-	TaskInfo
+type MRTask struct {
+	WorkerId        string
+	FileName        string
+	FileSlice       int
+	TaskType        TaskType
+	NReduce         int
+	TaskStatus      string
+	MapTaskIndex    int
+	ReduceTaskIndex int
+	StartTime       time.Time
+	MapDoneCount    int
 }
 
 type RequestTaskInfo struct {
@@ -41,11 +53,27 @@ type RequestTaskInfo struct {
 }
 
 type ReplyTaskInfo struct {
-	TaskInfo
+	MRTask
 }
 
 type WorkerInfo struct {
 	WorkerId string
+}
+
+type EmptyInterface struct {
+}
+
+func DebugTask(label string, t *MRTask) {
+	fmt.Printf("====== [ %s ] ======\n", label)
+	fmt.Printf("WorkerId: %s\n", t.WorkerId)
+	fmt.Printf("FileName: %s\n", t.FileName)
+	fmt.Printf("TaskType: %d\n", t.TaskType)
+	fmt.Printf("TaskStatus: %s\n", t.TaskStatus)
+	fmt.Printf("MapTaskIndex: %d\n", t.MapTaskIndex)
+	fmt.Printf("ReduceTaskIndex: %d\n", t.ReduceTaskIndex)
+	fmt.Printf("StartTime: %v\n", t.StartTime)
+	fmt.Printf("MapDoneCount: %d\n", t.MapDoneCount)
+	fmt.Printf("========================\n")
 }
 
 // Add your RPC definitions here.
