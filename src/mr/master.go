@@ -16,6 +16,7 @@ const (
 	IDLE               = "IDLE"
 	IN_PROGRESS        = "IN_PROGRESS"
 	COMPLETED          = "COMPLETED"
+	FAILED             = "FAILED"
 	MRTaskPhaseUnstart = 0
 	MRTaskPhaseMap     = 1
 	MRTaskPhaseReduce  = 2
@@ -40,16 +41,27 @@ type Master struct {
 // Your code here -- RPC handlers for the worker to call.
 
 func (m *Master) RequestTask(args *RequestTaskInfo, reply *ReplyTaskInfo) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	//m.mu.Lock()
+	//defer m.mu.Unlock()
 
 	task := m.PickTaskFromQueue(args.WorkerId)
+	task.WorkerId = args.WorkerId
 	//reply = &task
 	reply.MRTask = task
+	//if task.TaskType == TaskMap {
+	//	fmt.Printf("[%v] Assign map task %s to WorkerId %s\n", time.Now(), task.FileName, task.WorkerId)
+	//} else if task.TaskType == TaskReduce {
+	//	fmt.Printf("[%v] Assign reduce task %d to WorkerId %s\n", time.Now(), task.ReduceTaskIndex, task.WorkerId)
+	//} else {
+	//	fmt.Printf("[%v] Assign unknown task %d to WorkerId %s\n", time.Now(), task.ReduceTaskIndex, task.WorkerId)
+	//}
 	return nil
 }
 
 func (m *Master) RegisterWorker(_, info *WorkerInfo) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	Id := len(m.WorkerStatus) + 1
 	info.WorkerId = strconv.Itoa(Id)
 	m.WorkerStatus[info.WorkerId] = info
@@ -57,21 +69,32 @@ func (m *Master) RegisterWorker(_, info *WorkerInfo) error {
 }
 
 func (m *Master) ReportTask(args *MRTask, _ *EmptyInterface) error {
-	DebugTask("Receive ReportTask in server", args)
+	//DebugTask("Receive ReportTask in server", args)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	k := ""
+	if args.TaskType == TaskMap {
+		k = args.FileName
+	} else if args.TaskType == TaskReduce {
+		k = strconv.Itoa(args.ReduceTaskIndex)
+	} else {
+		fmt.Printf("Error in ReportTask: TaskType\n")
+	}
+
 	if args.TaskStatus == COMPLETED {
-		k := ""
-		if args.TaskType == TaskMap {
-			k = args.FileName
-		} else if args.TaskType == TaskReduce {
-			k = strconv.Itoa(args.ReduceTaskIndex)
-		} else {
-			fmt.Printf("Error in ReportTask: TaskType\n")
-		}
 		if v, ok := m.Tasks[k]; ok {
 			v.TaskStatus = COMPLETED
 			m.Tasks[k] = v
 		}
+	} else if args.TaskStatus == FAILED {
+		if v, ok := m.Tasks[k]; ok {
+			v.TaskStatus = IDLE
+			m.Tasks[k] = v
+		}
 	}
+
+	//go m.ScheduleTask()
 	return nil
 }
 
@@ -83,17 +106,20 @@ func (m *Master) ScheduleTask() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	fmt.Printf("ScheduleTask Called\n")
+	//fmt.Printf("ScheduleTask Called\n")
 
 	allFinish := true
-	for i, t := range m.Tasks {
-		DebugTask(fmt.Sprintf("Task %s in queue", i), &t)
+	for k, t := range m.Tasks {
+		//DebugTask(fmt.Sprintf("Task %s in queue", i), &t)
 		switch t.TaskStatus {
 		case IDLE:
 			allFinish = false
 		case IN_PROGRESS:
 			allFinish = false
-			//m.HeartBeatCheck(t)
+			if !m.HeartBeatCheck(t) {
+				t.TaskStatus = IDLE
+				m.Tasks[k] = t
+			}
 		case COMPLETED:
 		default:
 			fmt.Printf("task status invalid")
@@ -104,27 +130,59 @@ func (m *Master) ScheduleTask() {
 	}
 }
 
-func (m *Master) HeartBeatCheck(task MRTask) {
-	if time.Now().Sub(task.StartTime) > MaxTaskRunTime {
-		task.TaskStatus = IDLE
+func (m *Master) CheckTaskQueue(stage string) {
+	fmt.Printf("Check task queue in stage %s\n", stage)
+	idx := 0
+	for k, v := range m.Tasks {
+		DebugTask(fmt.Sprintf("Key: %s index: %d", k, idx), &v)
+		idx++
 	}
 }
 
+func (m *Master) HeartBeatCheck(task MRTask) bool {
+	if time.Now().Sub(task.StartTime) > MaxTaskRunTime {
+		fmt.Printf("Trigger max runtime %s %d\n", task.FileName, task.ReduceTaskIndex)
+		return false
+	}
+	return true
+}
+
 func (m *Master) PickTaskFromQueue(WorkerId string) MRTask {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	task := MRTask{}
-	for _, t := range m.Tasks {
+	if m.MRTaskPhase == MRTaskPhaseDone {
+		task.TaskType = TaskQuit
+		return task
+	}
+
+	found := false
+
+	for k, t := range m.Tasks {
 		switch t.TaskStatus {
 		case IDLE:
 			t.TaskStatus = IN_PROGRESS
 			t.StartTime = time.Now()
+			t.WorkerId = WorkerId
 			task = t
+			m.Tasks[k] = task
+			//tmp := m.Tasks[k]
+			found = true
+			//DebugTask("After update tmp", &tmp)
+			//DebugTask("After update task", &task)
 		case IN_PROGRESS:
 		case COMPLETED:
 		default:
 			fmt.Printf("task status invalid")
 		}
+		if found {
+			break
+		}
 	}
-	DebugTask("PickTaskFromQueue", &task)
+	if !found {
+		task.TaskType = TaskNull
+	}
 	return task
 }
 
@@ -132,28 +190,36 @@ func (m *Master) InitTaskQueue() {
 	if m.MRTaskPhase == MRTaskPhaseUnstart {
 		m.MRTaskPhase = MRTaskPhaseMap
 		m.Tasks = make(map[string]MRTask)
+		//fmt.Printf("Init TaskQueue MRTaskPhaseMap\n")
 		for index, file := range m.files {
-			m.Tasks[file] = MRTask{
+			t := MRTask{
 				FileName:     file,
 				NReduce:      m.nReduce,
 				TaskStatus:   IDLE,
 				TaskType:     TaskMap,
 				MapTaskIndex: index,
 			}
+			m.Tasks[file] = t
+			//DebugTask(fmt.Sprintf("Init TaskQueue MRTaskPhaseMap %s", file), &t)
 		}
+		//m.CheckTaskQueue("Phase Map")
 	} else if m.MRTaskPhase == MRTaskPhaseMap {
 		m.MRTaskPhase = MRTaskPhaseReduce
 		m.Tasks = make(map[string]MRTask)
+		//fmt.Printf("Init TaskQueue MRTaskPhaseReduce\n")
 		for index := 0; index < m.nReduce; index++ {
-			m.Tasks[strconv.Itoa(index)] = MRTask{
+			t := MRTask{
 				TaskStatus:      IDLE,
 				TaskType:        TaskReduce,
 				NReduce:         m.nReduce,
 				ReduceTaskIndex: index,
 				MapDoneCount:    len(m.files),
 			}
+			m.Tasks[strconv.Itoa(index)] = t
+			//DebugTask(fmt.Sprintf("Init TaskQueue MRTaskPhaseMap %d", index), &t)
 		}
-		fmt.Printf("Init reduce task queue\n")
+		//m.CheckTaskQueue("Phase Reduce")
+		//fmt.Printf("Init reduce task queue\n")
 		//for index, file := range m.files {
 		//	m.Tasks[file] = MRTask{
 		//		TaskStatus:      IDLE,
@@ -165,9 +231,11 @@ func (m *Master) InitTaskQueue() {
 		//}
 	} else if m.MRTaskPhase == MRTaskPhaseReduce {
 		m.MRTaskPhase = MRTaskPhaseDone
+		m.Tasks = make(map[string]MRTask)
 		m.done = true
+		//m.CheckTaskQueue("Phase Done")
 	} else if m.MRTaskPhase == MRTaskPhaseDone {
-		fmt.Printf("[Warning]: Potential phase loop causing")
+		fmt.Printf("[Warning]: Potential phase loop causing\n")
 	}
 }
 
@@ -194,16 +262,13 @@ func (m *Master) server() {
 func (m *Master) Done() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	ret := m.done
-	fmt.Printf("Call Done() func -> %v\n", ret)
-	return ret
+	return m.done
 }
 
-func (m *Master) Schedule(wg *sync.WaitGroup) {
+func (m *Master) Schedule() {
 	for !m.Done() {
 		go m.ScheduleTask()
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
@@ -212,16 +277,17 @@ func MakeMaster(files []string, nReduce int) *Master {
 		files:       files,
 		nReduce:     nReduce,
 		MRTaskPhase: MRTaskPhaseUnstart,
+		mu:          sync.Mutex{},
 	}
 
 	for _, file := range m.files {
 		m.UnassignedFiles = append(m.UnassignedFiles, file)
 	}
 	m.InitTaskQueue()
-	wg := sync.WaitGroup{}
-	go m.Schedule(&wg)
+	m.WorkerStatus = make(map[string]*WorkerInfo)
+
+	go m.Schedule()
 
 	m.server()
-	m.WorkerStatus = make(map[string]*WorkerInfo)
 	return &m
 }

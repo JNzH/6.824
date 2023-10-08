@@ -30,8 +30,8 @@ type TaskType int
 
 const (
 	TaskNull   TaskType = -1
-	TaskMap    TaskType = 0
-	TaskReduce TaskType = 1
+	TaskMap    TaskType = 1
+	TaskReduce TaskType = 2
 	TaskQuit   TaskType = 3
 )
 
