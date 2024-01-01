@@ -97,6 +97,34 @@ type Raft struct {
 	electionTimeout       time.Duration
 }
 
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	Log          []LogEntry
+	LeaderCommit int
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+// return currentTerm and whether this server
+// believes it is the leader.
+func (rf *Raft) GetState() (int, bool) {
+
+	var term int
+	var isleader bool
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.currentTerm
+	isleader = rf.state == LEADER
+	fmt.Printf("GetState end %v state: %v...\n", rf.me, rf.state)
+	return term, isleader
+}
+
 func (rf *Raft) init(me int) {
 	rf.currentTerm = 1
 	rf.me = me
@@ -126,26 +154,14 @@ func (rf *Raft) debugSchedule() {
 }
 
 func (rf *Raft) heartbeatCheck() {
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
 	for {
 		if rf.killed() {
 			break
 		}
-		//rf.l("Begin heartBeatCheck")
 		rf.mu.Lock()
-		//defer rf.ul("End heartBeatCheck")
 		if rf.state == LEADER {
-			//rf.ul("End heartBeatCheck")
-			//for index := range rf.peers {
-			//	if index == rf.me {
-			//		continue
-			//	}
-			//	rf.maintainAuthority(index)
-			//}
 			rf.broadcastHeartbeat()
 		}
-		//rf.ul("End heartBeatCheck")
 		rf.mu.Unlock()
 		time.Sleep(HeartbeatInterval)
 	}
@@ -163,38 +179,26 @@ func (rf *Raft) broadcastHeartbeat() {
 		if i == rf.me {
 			continue
 		}
-		go func(i int, args *AppendEntriesArgs) {
-			var reply AppendEntriesReply
-			ok := rf.sendAppendEntries(i, args, &reply)
-			if !ok {
-				return
-			}
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			if rf.currentTerm != args.Term {
-				return
-			}
-			if reply.Term > rf.currentTerm {
-				rf.state = FOLLOWER
-				rf.currentTerm = reply.Term
-				rf.votedFor = -1
-			}
-		}(i, args)
+		go rf.maintainAuthority(i, args)
 	}
 	rf.mu.Lock()
 }
 
-func (rf *Raft) maintainAuthority(server int) {
-	args := &AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderId:     rf.me,
-		PrevLogIndex: -1,
-		LeaderCommit: -1,
-	}
+func (rf *Raft) maintainAuthority(server int, args *AppendEntriesArgs) {
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(server, args, reply)
 	if !ok {
 		return
+	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.currentTerm != args.Term {
+		return
+	}
+	if reply.Term > rf.currentTerm {
+		rf.state = FOLLOWER
+		rf.currentTerm = reply.Term
+		rf.votedFor = -1
 	}
 }
 
@@ -203,90 +207,71 @@ func (rf *Raft) startElectionCheck() {
 		if rf.killed() {
 			break
 		}
-		//rf.l("Begin startElectionCheck")
 		rf.mu.Lock()
 		if rf.state == LEADER {
 			rf.mu.Unlock()
 			continue
 		}
 		if time.Since(rf.lastCommunicationTime) > rf.electionTimeout {
-			rf.electionTimeout = NextElectionTimeout()
-			rf.state = CANDIDATE
-			rf.currentTerm++
-			rf.votedFor = rf.me
-			args := &RequestVoteArgs{
-				Term:        rf.currentTerm,
-				CandidateId: rf.me,
-			}
-			rf.mu.Unlock()
-
-			vote := 1
-			for index := range rf.peers {
-				if index == rf.me {
-					continue
-				}
-				go func(index int, args *RequestVoteArgs) {
-					reply := &RequestVoteReply{}
-					ok := rf.sendRequestVote(index, args, reply)
-					if !ok {
-						return
-					}
-					rf.mu.Lock()
-					defer rf.mu.Unlock()
-					if rf.state != CANDIDATE || rf.currentTerm != args.Term {
-						return
-					}
-					if reply.Term > rf.currentTerm {
-						rf.state = FOLLOWER
-						rf.currentTerm = reply.Term
-						rf.votedTerm = -1
-						rf.votedFor = -1
-					}
-					if reply.VoteGranted {
-						vote++
-						if rf.IsMajority(vote) {
-							rf.state = LEADER
-							rf.isLeader = true
-							rf.broadcastHeartbeat()
-						}
-					}
-				}(index, args)
-			}
+			rf.startElection()
 			rf.mu.Lock()
-			//go rf.startElection()
 		}
 		rf.mu.Unlock()
 		time.Sleep(rf.electionTimeout)
 	}
-
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
-func (rf *Raft) GetState() (int, bool) {
+func (rf *Raft) startElection() {
+	rf.electionTimeout = NextElectionTimeout()
+	rf.state = CANDIDATE
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	args := &RequestVoteArgs{
+		Term:        rf.currentTerm,
+		CandidateId: rf.me,
+	}
+	rf.mu.Unlock()
 
-	var term int
-	var isleader bool
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	term = rf.currentTerm
-	isleader = rf.state == LEADER
-	fmt.Printf("GetState end %v state: %v...\n", rf.me, rf.state)
-	return term, isleader
+	vote := 1
+	for index := range rf.peers {
+		if index == rf.me {
+			continue
+		}
+		go func(index int, args *RequestVoteArgs) {
+			reply := &RequestVoteReply{}
+			ok := rf.sendRequestVote(index, args, reply)
+			if !ok {
+				return
+			}
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			if rf.state != CANDIDATE || rf.currentTerm != args.Term {
+				return
+			}
+			if reply.Term > rf.currentTerm {
+				rf.state = FOLLOWER
+				rf.currentTerm = reply.Term
+				rf.votedTerm = -1
+				rf.votedFor = -1
+			}
+			if reply.VoteGranted {
+				vote++
+				if rf.IsMajority(vote) {
+					rf.winElection()
+				}
+			}
+		}(index, args)
+	}
 }
 
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	Log          []LogEntry
-	LeaderCommit int
+func (rf *Raft) winElection() {
+	rf.state = LEADER
+	rf.isLeader = true
+	rf.broadcastHeartbeat()
 }
 
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
+func (rf *Raft) IsMajority(count int) bool {
+	return count*2 >= len(rf.peers)
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -371,7 +356,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	upToDate := rf.CheckUpToDate(args)
+	upToDate := rf.checkUpToDate(args)
 	notYetVote := rf.notYetVote(args)
 
 	// Check whether update and grant vote
@@ -394,7 +379,7 @@ func (rf *Raft) notYetVote(args *RequestVoteArgs) bool {
 	return false
 }
 
-func (rf *Raft) CheckUpToDate(args *RequestVoteArgs) bool {
+func (rf *Raft) checkUpToDate(args *RequestVoteArgs) bool {
 	upToDate := true
 	if rf.currentTerm > args.Term {
 		upToDate = false
@@ -439,79 +424,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
-}
-
-func (rf *Raft) startElection() {
-	rf.mu.Lock()
-	voteCount := 0
-	rf.currentTerm += 1
-	newTerm := rf.currentTerm
-	rf.mu.Unlock()
-	for index := range rf.peers {
-		if index == rf.me {
-			voteCount++
-			continue
-		}
-		rf.mu.Lock()
-		logTerm := -1
-		logIndex := -1
-		if len(rf.log) != 0 {
-			logTerm = rf.log[len(rf.log)-1].Term
-			logIndex = rf.log[len(rf.log)-1].Index
-		}
-		args := &RequestVoteArgs{
-			Term:         newTerm,
-			CandidateId:  rf.me,
-			LastLogTerm:  logTerm,
-			LastLogIndex: logIndex,
-		}
-		reply := &RequestVoteReply{
-			Term:        -1,
-			VoteGranted: false,
-		}
-		rf.mu.Unlock()
-		go func(index int, args *RequestVoteArgs, reply *RequestVoteReply) {
-			suc := rf.sendRequestVote(index, args, reply)
-			if suc && reply.VoteGranted {
-				voteCount++
-			}
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			if rf.IsMajority(voteCount) {
-				rf.isLeader = true
-				rf.state = LEADER
-				rf.winElection()
-			}
-		}(index, args, reply)
-		//fmt.Printf("%v to %v RequestVote at term %v call result %v %v (rpc call suc? %v)\n", rf.me, index, rf.currentTerm, reply.VoteGranted, reply.Term, suc)
-	}
-	//fmt.Printf("%v receive vote count %v\n", rf.me, voteCount)
-	//if rf.IsMajority(voteCount) {
-	//	rf.isLeader = true
-	//	rf.state = LEADER
-	//	rf.winElection()
-	//} else {
-	//	rf.isLeader = false
-	//	rf.state = CANDIDATE
-	//}
-	//rf.ul("End StartElection")
-}
-
-func (rf *Raft) winElection() {
-	if rf.isLeader {
-		rf.electionTimeout = NextElectionTimeout()
-		fmt.Printf("[Win] Win election %v at term %v\n", rf.me, rf.currentTerm)
-		for index := range rf.peers {
-			if index == rf.me {
-				continue
-			}
-			rf.maintainAuthority(index)
-		}
-	}
-}
-
-func (rf *Raft) IsMajority(count int) bool {
-	return count*2 >= len(rf.peers)
 }
 
 //
