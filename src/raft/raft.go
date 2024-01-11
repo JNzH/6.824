@@ -54,6 +54,13 @@ const (
 	FOLLOWER  ServerState = 3
 )
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 const HeartbeatInterval = 300 * time.Millisecond
 
 type LogEntry struct {
@@ -95,6 +102,8 @@ type Raft struct {
 
 	lastCommunicationTime time.Time
 	electionTimeout       time.Duration
+
+	applyChan chan ApplyMsg
 }
 
 type AppendEntriesArgs struct {
@@ -127,6 +136,10 @@ func (rf *Raft) GetState() (int, bool) {
 
 func (rf *Raft) init(me int) {
 	rf.currentTerm = 1
+	rf.commitIndex = 0
+	rf.log = make([]LogEntry, 1)
+	fmt.Printf("[Init %v] log len %v\n", rf.me, len(rf.log))
+	//rf.log = append(rf.log, LogEntry{})
 	rf.me = me
 	rf.state = FOLLOWER
 	rf.electionTimeout = NextElectionTimeout()
@@ -169,9 +182,10 @@ func (rf *Raft) heartbeatCheck() {
 
 func (rf *Raft) broadcastHeartbeat() {
 	args := &AppendEntriesArgs{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
-		Log:      nil,
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		Log:          nil,
+		LeaderCommit: rf.commitIndex,
 	}
 	rf.mu.Unlock()
 
@@ -265,6 +279,7 @@ func (rf *Raft) startElection() {
 }
 
 func (rf *Raft) winElection() {
+	fmt.Printf("[Leader %v Win] term: %v\n", rf.me, rf.currentTerm)
 	rf.state = LEADER
 	rf.isLeader = true
 	rf.broadcastHeartbeat()
@@ -279,6 +294,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	if len(args.Log) == 0 {
+	} else if rf.state == FOLLOWER {
+		for i := range args.Log {
+			//args.Log[i].Index =
+			//args.Log[i].Term = rf.currentTerm
+			rf.log = append(rf.log, args.Log[i])
+		}
+		fmt.Printf("[Append Entries %v] after append len %v\n", rf.me, len(rf.log))
+	}
+	fmt.Printf("[Append Entries %v] Before if -> leaderCommit %v, commitIndex %v, len(log) %v\n", rf.me, args.LeaderCommit, rf.commitIndex, len(rf.log))
+	if args.LeaderCommit > rf.commitIndex {
+		fmt.Printf("[Append Entries %v] Update on leaderCommit %v -> commitIndex %v\n", rf.me, args.LeaderCommit, rf.commitIndex)
+		rf.commitIndex = min(args.LeaderCommit, rf.log[len(rf.log)-1].Index)
+	}
+	fmt.Printf("[Append Entries %v] Update last apply %v, cidx %v\n", rf.me, rf.lastApplied, rf.commitIndex)
+	for rf.lastApplied < rf.commitIndex {
+		rf.lastApplied++
+		rf.applyChan <- ApplyMsg{
+			CommandValid: true,
+			Command:      rf.log[rf.lastApplied].Command,
+			CommandIndex: rf.log[rf.lastApplied].Index,
+		}
 	}
 	rf.lastCommunicationTime = time.Now()
 	if args.Term >= rf.currentTerm {
@@ -441,13 +477,63 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state != LEADER {
+		return -1, -1, false
+	}
+	index := len(rf.log)
+	log := LogEntry{
+		Term:    rf.currentTerm,
+		Index:   index,
+		Command: command,
+	}
+	rf.log = append(rf.log, log)
+	go rf.broadcastAppendEntries(log)
+	//fmt.Printf("[Server %v Start] Command: %v, index: %v, term: %v, isLeader: %v\n", rf.me, command, index, rf.currentTerm, rf.state == LEADER)
+	return index, rf.currentTerm, true
+}
 
-	// Your code here (2B).
+func (rf *Raft) broadcastAppendEntries(log LogEntry) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	count := 1
+	index := log.Index
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		args := &AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: 0,
+			Log:          []LogEntry{log},
+			LeaderCommit: rf.commitIndex,
+		}
+		reply := &AppendEntriesReply{
+			Term:    -1,
+			Success: false,
+		}
+		ok := rf.sendAppendEntries(i, args, reply)
+		if ok && reply.Success {
+			count++
+		}
+	}
+	if rf.IsMajority(count) {
+		rf.ApplyLog(rf.log[index])
+		rf.commitIndex = index
+		//fmt.Printf("[IsMajority Server %v] index: %v, cmd: %v\n", rf.me, rf.commitIndex, rf.log[rf.commitIndex].Command)
+	}
+}
 
-	return index, term, isLeader
+func (rf *Raft) ApplyLog(entry LogEntry) {
+	//fmt.Printf("[ApplyLog Server %v] term %v, index %v, cmd %v\n", rf.me, entry.Term, entry.Index, entry.Command)
+	rf.applyChan <- ApplyMsg{
+		CommandValid: true,
+		Command:      entry.Command,
+		CommandIndex: entry.Index,
+	}
+	rf.lastApplied = entry.Index
 }
 
 //
@@ -489,6 +575,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyChan = applyCh
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.init(me)
