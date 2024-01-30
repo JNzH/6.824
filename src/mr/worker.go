@@ -13,9 +13,7 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 
-//
 // Map functions return a slice of KeyValue.
-//
 type KeyValue struct {
 	Key   string
 	Value string
@@ -33,19 +31,15 @@ type worker struct {
 	reducef func(string, []string) string
 }
 
-//
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-//
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-//
 // main/mrworker.go calls this function.
-//
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
@@ -70,8 +64,8 @@ func (w *worker) run() {
 
 func (w *worker) RegisterWorker() {
 	reply := &WorkerInfo{}
-	if ok := call("Master.RegisterWorker", &WorkerInfo{}, reply); !ok {
-		fmt.Printf("Error calling RegisterWorker\n")
+	if ok := call("Coordinator.RegisterWorker", &WorkerInfo{}, reply); !ok {
+		//fmt.Printf("Error calling RegisterWorker\n")
 	}
 	w.id = reply.WorkerId
 }
@@ -79,7 +73,7 @@ func (w *worker) RegisterWorker() {
 func (w *worker) RequestTask() *MRTask {
 	args := &RequestTaskInfo{WorkerId: w.id}
 	reply := &ReplyTaskInfo{}
-	if ok := call("Master.RequestTask", args, &reply); !ok {
+	if ok := call("Coordinator.RequestTask", args, &reply); !ok {
 		fmt.Printf("Error calling RequestTask\n")
 	}
 	return &reply.MRTask
@@ -105,7 +99,7 @@ func (w *worker) ReportTaskDone(t *MRTask) {
 	//	TaskStatus: COMPLETED,
 	//}
 	args := t
-	if ok := call("Master.ReportTask", args, &EmptyInterface{}); !ok {
+	if ok := call("Coordinator.ReportTask", args, &EmptyInterface{}); !ok {
 		fmt.Printf("Error calling ReportTask\n")
 	}
 }
@@ -113,7 +107,7 @@ func (w *worker) ReportTaskDone(t *MRTask) {
 func (w *worker) ReportTaskFailed(t *MRTask) {
 	t.TaskStatus = FAILED
 	args := t
-	if ok := call("Master.ReportTask", args, &EmptyInterface{}); !ok {
+	if ok := call("Coordinator.ReportTask", args, &EmptyInterface{}); !ok {
 		fmt.Printf("Error calling ReportTask\n")
 	}
 }
@@ -205,14 +199,12 @@ func DecodeFile(fileName string) []KeyValue {
 	return kvs
 }
 
-//
-// send an RPC request to the master, wait for the response.
+// send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-//
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := masterSock()
+	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
 		log.Fatal("dialing:", err)
