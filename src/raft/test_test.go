@@ -56,17 +56,23 @@ func TestReElection2A(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): election after network failure")
+	//fmt.Printf("[Test] 1 CheckOneLeader begin...\n")
 
 	leader1 := cfg.checkOneLeader()
+	//fmt.Printf("[Test] 1 CheckOneLeader end...\n")
 
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
+	//fmt.Printf("[Test] 2 disconnect CheckOneLeader begin...\n")
 	cfg.checkOneLeader()
+	//fmt.Printf("[Test] 2 disconnect CheckOneLeader end...\n")
 
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader.
+	//fmt.Printf("[Test] 3 rejoin CheckOneLeader begin...\n")
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
+	//fmt.Printf("[Test] 3 rejoin CheckOneLeader end...\n")
 
 	// if there's no quorum, no leader should
 	// be elected.
@@ -109,10 +115,8 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.end()
 }
 
-//
 // check, based on counting bytes of RPCs, that
 // each command is sent to each peer just once.
-//
 func TestRPCBytes2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
@@ -137,6 +141,7 @@ func TestRPCBytes2B(t *testing.T) {
 	bytes1 := cfg.bytesTotal()
 	got := bytes1 - bytes0
 	expected := int64(servers) * sent
+	//fmt.Printf("[Result] got: %v, expect: %v\n", got, expected)
 	if got > expected+50000 {
 		t.Fatalf("too many RPC bytes; got %v, expected %v", got, expected)
 	}
@@ -189,6 +194,7 @@ func TestFailNoAgree2B(t *testing.T) {
 
 	// 3 of 5 followers disconnect
 	leader := cfg.checkOneLeader()
+	//fmt.Printf("[No agree] Leader1 %v\n", leader)
 	cfg.disconnect((leader + 1) % servers)
 	cfg.disconnect((leader + 2) % servers)
 	cfg.disconnect((leader + 3) % servers)
@@ -216,6 +222,7 @@ func TestFailNoAgree2B(t *testing.T) {
 	// the disconnected majority may have chosen a leader from
 	// among their own ranks, forgetting index 2.
 	leader2 := cfg.checkOneLeader()
+	//fmt.Printf("[No agree] Leader2 %v\n", leader2)
 	index2, _, ok2 := cfg.rafts[leader2].Start(30)
 	if ok2 == false {
 		t.Fatalf("leader2 rejected Start()")
@@ -341,6 +348,7 @@ func TestRejoin2B(t *testing.T) {
 
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
+	//fmt.Printf("[Rejoin leader1 %v]\n", leader1)
 	cfg.disconnect(leader1)
 
 	// make old leader try to agree on some entries
@@ -353,15 +361,20 @@ func TestRejoin2B(t *testing.T) {
 
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
+	//fmt.Printf("[Rejoin leader2 %v]\n", leader2)
 	cfg.disconnect(leader2)
 
 	// old leader connected again
 	cfg.connect(leader1)
+	//leader3 := cfg.checkOneLeader()
+	//fmt.Printf("[Rejoin leader3 %v]\n", leader3)
 
 	cfg.one(104, 2, true)
 
 	// all together now
 	cfg.connect(leader2)
+	//leader4 := cfg.checkOneLeader()
+	//fmt.Printf("[Rejoin leader4 %v]\n", leader4)
 
 	cfg.one(105, servers, true)
 
@@ -672,7 +685,6 @@ func TestPersist32C(t *testing.T) {
 	cfg.end()
 }
 
-//
 // Test the scenarios described in Figure 8 of the extended Raft paper. Each
 // iteration asks a leader, if there is one, to insert a command in the Raft
 // log.  If there is a leader, that leader will fail quickly with a high
@@ -681,7 +693,6 @@ func TestPersist32C(t *testing.T) {
 // alive servers isn't enough to form a majority, perhaps start a new server.
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
-//
 func TestFigure82C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
