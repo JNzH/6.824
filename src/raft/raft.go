@@ -44,6 +44,12 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+
+	// For 2D:
+	SnapshotValid bool
+	Snapshot      []byte
+	SnapshotTerm  int
+	SnapshotIndex int
 }
 
 type ServerState int
@@ -109,12 +115,6 @@ type Raft struct {
 	electionTimeout       time.Duration
 
 	applyChan chan ApplyMsg
-
-	// For 2D:
-	SnapshotValid bool
-	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
 }
 
 type AppendEntriesArgs struct {
@@ -557,7 +557,9 @@ func (rf *Raft) applyLog() {
 			}
 			//fmt.Printf("[applyLog %v (%v)] index: %v, cmd: %v\n", rf.me, rf.state == LEADER, rf.log[i].Index, str)
 			rf.applyChan <- ApplyMsg{
-				true, rf.log[i].Command, rf.log[i].Index,
+				CommandValid: true,
+				Command:      rf.log[i].Command,
+				CommandIndex: rf.log[i].Index,
 			}
 		}
 		rf.lastApplied = rf.commitIndex
